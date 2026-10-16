@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eMudhra Candidate Screening</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1b2133; --muted:#5b6478; --accent:#1f5eff; --ok:#14804a; --bad:#b42318; --line:#e3e6ee; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 32px 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:28px; }
+  h1 { font-size: 22px; margin:0 0 6px; }
+  p { color:var(--muted); line-height:1.5; }
+  label { display:block; font-size:14px; font-weight:600; margin:14px 0 6px; }
+  input, textarea { width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  textarea { min-height:110px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button.secondary { background:#eef1f8; color:var(--ink); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+  .progress { font-size:13px; color:var(--muted); margin-bottom:10px; }
+  .bar { height:6px; background:#eef1f8; border-radius:4px; overflow:hidden; margin-bottom:20px; }
+  .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .question { font-size:19px; font-weight:600; line-height:1.4; margin:0 0 16px; }
+  .status { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--muted); margin-bottom:10px; min-height:20px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#c5cad6; }
+  .dot.live { background:var(--bad); animation:pulse 1s infinite; }
+  .dot.speak { background:var(--accent); }
+  @keyframes pulse { 50% { opacity:.3; } }
+  .hidden { display:none; }
+  .note { font-size:13px; color:var(--muted); margin-top:14px; }
+  .msg-ok { color:var(--ok); font-weight:600; }
+  .msg-bad { color:var(--bad); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Start screen -->
+  <div class="card" id="start">
+    <h1>eMudhra: First Round Screening</h1>
+    <p>Hi! This is a short voice screening for the <b id="roleName"></b> role. An AI interviewer will ask you <b id="qCount"></b> questions out loud. Answer by speaking, then click <b>Next</b>. It takes about 10 to 15 minutes.</p>
+    <p>Please use <b>Google Chrome</b> on a laptop, in a quiet room, and allow microphone access when asked. You can edit the text of each answer before moving on.</p>
+    <label for="name">Full name</label>
+    <input id="name" autocomplete="name">
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="email">
+    <label for="phone">Phone</label>
+    <input id="phone" autocomplete="tel">
+    <div class="row"><button id="beginBtn">Start screening</button></div>
+    <div class="note" id="browserNote"></div>
+  </div>
+
+  <!-- Interview screen -->
+  <div class="card hidden" id="interview">
+    <div class="progress" id="progressText"></div>
+    <div class="bar"><div id="progressBar"></div></div>
+    <p class="question" id="questionText"></p>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText"></span></div>
+    <textarea id="answer" placeholder="Your answer will appear here as you speak. You can also type or edit."></textarea>
+    <div class="row">
+      <button class="secondary" id="repeatBtn">Repeat question</button>
+      <button class="secondary" id="micBtn">Pause mic</button>
+      <button id="nextBtn">Next</button>
+    </div>
+  </div>
+
+  <!-- Done screen -->
+  <div class="card hidden" id="done">
+    <h1>Almost done!</h1>
+    <p id="doneText"></p>
+    <div class="row hidden" id="backupRow">
+      <a class="hidden" id="submitLink" target="_blank" rel="noopener"><button>Open submission form</button></a>
+      <button class="secondary" id="downloadBtn">Download my answers</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ================== CONFIG (edit these) ================== */
+
+// Paste your Microsoft Forms pre-filled link here (see SETUP.md).
+// Fill it with the placeholders NAME, EMAIL, PHONE, MINUTES, Q1 ... Q9.
+const FORM_PREFILL_URL = "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?id=H5ohEWKeVkCO4tATvgNAX98OS3hb0JRKuNsrGYgwdyVUNFFWSVNGUFNPSzE2OTVRUTBZSDFKREtPSC4u&r6e0bfa606862434596a0efb445a3b203=NAME&r1d566ff873674b90a71bbfa3370bf8ce=EMAIL&rdaf53bfecc7d4d6dab3a5a96fe635dc7=PHONE&rfa9cb7c6638f4c66963f5eb5ef1ec3dc=MINUTES&r1fcda827a11d45b0ac93092bf2a24572=Q1&r41cc4dab4a484fe7af91edec3c96d24d=Q2&r9bb53565afb54e8d865c799f7ef20461=Q3&r880828d562ac48dabd3bd8c9d70d9010=Q4&r98d4c94c9a9e4ced9ea33a9af0e11ceb=Q5&r6bd0d1216d9d4ce3a04384355d424efc=Q6&r48aed31c7cb4453c8d96cb86b0ab65c7=Q7&rab39d22e99744cd4b312e4ebb2cd212e=Q8&r1c14bd18ab514217be90a3872925c00a=Q9";
+
+const ROLE = "L2 Account Executive";
+
+const QUESTIONS = [
+  "To start, please introduce yourself. What is your current role and company, and how many years of B2B sales experience do you have in total?",
+  "Which software or SaaS products have you sold so far? Tell me the industries you sold into, your typical deal size, and your typical sales cycle.",
+  "Walk me through one deal you sourced through outbound and closed end to end yourself. How did you get the first meeting, who were the stakeholders, and how did you close it?",
+  "What was your sales quota last year, and what percentage of it did you achieve?",
+  "How do you build pipeline into large enterprises, Global Capability Centres, or Fortune 500 accounts? Which tools do you use for prospecting?",
+  "Have you sold any cybersecurity, identity and access management, or data privacy products? If yes, tell me what and to whom. If not, how would you ramp up on a technical product quickly?",
+  "This role works closely with an L1 sales development rep who books meetings for you. How have you worked with SDRs or inside sales teams before?",
+  "Why are you looking for a change right now, and where do you see yourself in the next two to three years?",
+  "Finally, what is your current location, your notice period, and your expected compensation?"
+];
+
+/* ========================================================= */
+
+const $ = id => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const synth = window.speechSynthesis;
+
+let idx = 0, answers = [], rec = null, listening = false, wantListen = false, baseText = "";
+let candidate = {}, startedAt = null;
+
+$("roleName").textContent = ROLE;
+$("qCount").textContent = QUESTIONS.length;
+if (!SR) $("browserNote").innerHTML = '<span class="msg-bad">Voice input is not supported in this browser. Please switch to Google Chrome, or you can type your answers instead.</span>';
+
+function pickVoice() {
+  const v = synth.getVoices();
+  return v.find(x => /en-IN/i.test(x.lang)) || v.find(x => /Google.*English/i.test(x.name)) || v.find(x => /^en/i.test(x.lang)) || null;
+}
+
+function setStatus(mode, text) {
+  $("dot").className = "dot" + (mode === "live" ? " live" : mode === "speak" ? " speak" : "");
+  $("statusText").textContent = text;
+}
+
+function speak(text) {
+  return new Promise(resolve => {
+    if (!synth) return resolve();
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice(); if (v) u.voice = v;
+    u.rate = 0.97;
+    u.onend = resolve; u.onerror = resolve;
+    setStatus("speak", "Interviewer is speaking...");
+    synth.speak(u);
+  });
+}
+
+function setupRec() {
+  if (!SR) return null;
+  const r = new SR();
+  r.lang = "en-IN";
+  r.continuous = true;
+  r.interimResults = true;
+  r.onresult = e => {
+    let finalText = "", interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t + " "; else interim += t;
+    }
+    if (finalText) baseText = (baseText + " " + finalText).replace(/\s+/g, " ").trim();
+    $("answer").value = (baseText + " " + interim).trim();
+  };
+  r.onend = () => { listening = false; if (wantListen) try { r.start(); listening = true; } catch (_) {} };
+  r.onerror = e => { if (e.error === "not-allowed") { wantListen = false; setStatus("", "Microphone blocked. Please allow mic access, or type your answer."); } };
+  return r;
+}
+
+function startListening() {
+  if (!rec) { setStatus("", "Type your answer below, then click Next."); return; }
+  baseText = $("answer").value.trim();
+  wantListen = true;
+  try { rec.start(); listening = true; } catch (_) {}
+  setStatus("live", "Listening... speak your answer, then click Next.");
+  $("micBtn").textContent = "Pause mic";
+}
+
+function stopListening() {
+  wantListen = false;
+  if (rec && listening) try { rec.stop(); } catch (_) {}
+  listening = false;
+}
+
+async function askCurrent() {
+  stopListening();
+  $("progressText").textContent = `Question ${idx + 1} of ${QUESTIONS.length}`;
+  $("progressBar").style.width = `${(idx / QUESTIONS.length) * 100}%`;
+  $("questionText").textContent = QUESTIONS[idx];
+  $("answer").value = answers[idx] || "";
+  $("nextBtn").textContent = idx === QUESTIONS.length - 1 ? "Finish" : "Next";
+  $("nextBtn").disabled = true;
+  await speak(QUESTIONS[idx]);
+  $("nextBtn").disabled = false;
+  startListening();
+}
+
+$("beginBtn").onclick = async () => {
+  candidate = { name: $("name").value.trim(), email: $("email").value.trim(), phone: $("phone").value.trim() };
+  if (!candidate.name || !candidate.email) { alertBox("Please enter your name and email."); return; }
+  startedAt = new Date();
+  rec = setupRec();
+  $("start").classList.add("hidden");
+  $("interview").classList.remove("hidden");
+  await speak(`Hi ${candidate.name.split(" ")[0]}, thanks for taking the time. I will ask you ${QUESTIONS.length} questions for the ${ROLE} role at eMudhra. Take your time with each answer.`);
+  askCurrent();
+};
+
+$("repeatBtn").onclick = async () => { stopListening(); await speak(QUESTIONS[idx]); startListening(); };
+
+$("micBtn").onclick = () => {
+  if (wantListen) { stopListening(); setStatus("", "Mic paused. You can type or edit your answer."); $("micBtn").textContent = "Resume mic"; }
+  else startListening();
+};
+
+$("nextBtn").onclick = async () => {
+  stopListening();
+  answers[idx] = $("answer").value.trim();
+  if (!answers[idx]) { setStatus("", "Please give an answer before moving on."); startListening(); return; }
+  if (idx < QUESTIONS.length - 1) { idx++; askCurrent(); }
+  else finish();
+};
+
+function buildPayload() {
+  const mins = Math.round((new Date() - startedAt) / 60000);
+  return {
+    submittedAt: new Date().toISOString(),
+    role: ROLE,
+    name: candidate.name, email: candidate.email, phone: candidate.phone,
+    durationMinutes: mins,
+    qa: QUESTIONS.map((q, i) => ({ q, a: answers[i] || "" }))
+  };
+}
+
+function buildFormUrl(p) {
+  const values = { NAME: p.name, EMAIL: p.email, PHONE: p.phone, MINUTES: String(p.durationMinutes) };
+  p.qa.forEach((x, i) => values["Q" + (i + 1)] = x.a);
+  const url = new URL(FORM_PREFILL_URL);
+  for (const [k, v] of [...url.searchParams.entries()]) {
+    const quoted = /^".*"$/.test(v);
+    const token = v.replace(/^"|"$/g, "").trim().toUpperCase();
+    if (token in values) url.searchParams.set(k, quoted ? `"${values[token]}"` : values[token]);
+  }
+  // Encode spaces as %20 (not +) so Forms reads them correctly
+  const qs = [...url.searchParams.entries()].map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+  return url.origin + url.pathname + "?" + qs + url.hash;
+}
+
+function finish() {
+  $("progressBar").style.width = "100%";
+  $("interview").classList.add("hidden");
+  $("done").classList.remove("hidden");
+  $("backupRow").classList.remove("hidden");
+  speak("Thank you. One last step. Click the button to open the submission form, check your answers, and press Submit.");
+  try {
+    const link = buildFormUrl(buildPayload());
+    $("submitLink").href = link;
+    $("submitLink").classList.remove("hidden");
+    $("doneText").innerHTML = 'One last step: click <b>Open submission form</b>. Your answers are already filled in. Check them and press <b>Submit</b> on the form. If anything looks cut off, download your answers below and email them to the recruiter who sent you this link.';
+  } catch (e) {
+    $("doneText").innerHTML = '<span class="msg-bad">The submission form is not set up.</span> Please download your answers and email them to the recruiter who sent you this link.';
+  }
+}
+
+$("downloadBtn").onclick = () => {
+  const p = buildPayload();
+  const text = `${p.role} screening\n${p.name} | ${p.email} | ${p.phone}\n${p.submittedAt}\n\n` + p.qa.map((x, i) => `Q${i + 1}. ${x.q}\nA: ${x.a}\n`).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  a.download = `screening-${p.name.replace(/\s+/g, "_")}.txt`;
+  a.click();
+};
+
+function alertBox(msg) { $("browserNote").innerHTML = `<span class="msg-bad">${msg}</span>`; }
+if (synth) synth.onvoiceschanged = () => {};
+</script>
+</body>
+</html>
