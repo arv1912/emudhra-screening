@@ -32,6 +32,9 @@
   .note { font-size:13px; color:var(--muted); margin-top:14px; }
   .msg-ok { color:var(--ok); font-weight:600; }
   .msg-bad { color:var(--bad); font-weight:600; }
+  .review-item { margin-top:18px; }
+  .review-item .rq { font-size:14px; font-weight:600; margin-bottom:6px; }
+  .engine { font-size:12px; color:var(--muted); margin-top:10px; }
 </style>
 </head>
 <body>
@@ -41,7 +44,7 @@
   <div class="card" id="start">
     <h1>eMudhra: First Round Screening</h1>
     <p>Hi! This is a short voice screening for the <b id="roleName"></b> role. An AI interviewer will ask you <b id="qCount"></b> questions out loud. Answer by speaking, then click <b>Next</b>. It takes about 10 to 15 minutes.</p>
-    <p>Please use <b>Google Chrome</b> on a laptop, in a quiet room, and allow microphone access when asked. You can edit the text of each answer before moving on.</p>
+    <p>Please use <b>Google Chrome</b> on a laptop, in a quiet room, and allow microphone access when asked. Earphones with a mic give the best results. You will be able to review and correct all your answers at the end.</p>
     <label for="name">Full name</label>
     <input id="name" autocomplete="name">
     <label for="email">Email</label>
@@ -50,6 +53,7 @@
     <input id="phone" autocomplete="tel">
     <div class="row"><button id="beginBtn">Start screening</button></div>
     <div class="note" id="browserNote"></div>
+    <div class="engine" id="engineNote"></div>
   </div>
 
   <!-- Interview screen -->
@@ -58,12 +62,21 @@
     <div class="bar"><div id="progressBar"></div></div>
     <p class="question" id="questionText"></p>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText"></span></div>
-    <textarea id="answer" placeholder="Your answer will appear here as you speak. You can also type or edit."></textarea>
+    <textarea id="answer" placeholder="A rough version of your answer appears here as you speak. A cleaner version is prepared for you to review at the end."></textarea>
     <div class="row">
       <button class="secondary" id="repeatBtn">Repeat question</button>
       <button class="secondary" id="micBtn">Pause mic</button>
       <button id="nextBtn">Next</button>
     </div>
+  </div>
+
+  <!-- Review screen -->
+  <div class="card hidden" id="review">
+    <h1>Review your answers</h1>
+    <p>Please read through and correct anything that was misheard, then click <b>Continue</b>.</p>
+    <div class="status"><span class="dot" id="reviewDot"></span><span id="reviewStatus"></span></div>
+    <div id="reviewList"></div>
+    <div class="row"><button id="reviewDoneBtn">Continue</button></div>
   </div>
 
   <!-- Done screen -->
@@ -87,6 +100,10 @@ const FORM_PREFILL_URL = "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?
 
 const ROLE = "L2 Account Executive";
 
+// Whisper speech model that runs in the candidate's browser (free, no account).
+// "Xenova/whisper-base.en" is about 80 MB. For higher accuracy but slower, try "Xenova/whisper-small.en" (about 250 MB).
+const WHISPER_MODEL = "Xenova/whisper-base.en";
+
 const QUESTIONS = [
   "To start, please introduce yourself. What is your current role and company, and how many years of B2B sales experience do you have in total?",
   "Which software or SaaS products have you sold so far? Tell me the industries you sold into, your typical deal size, and your typical sales cycle.",
@@ -107,10 +124,90 @@ const synth = window.speechSynthesis;
 
 let idx = 0, answers = [], rec = null, listening = false, wantListen = false, baseText = "";
 let candidate = {}, startedAt = null;
+let liveAnswers = [], whisperText = [], pending = new Set();
+let micStream = null, recorder = null, chunks = [];
 
 $("roleName").textContent = ROLE;
 $("qCount").textContent = QUESTIONS.length;
 if (!SR) $("browserNote").innerHTML = '<span class="msg-bad">Voice input is not supported in this browser. Please switch to Google Chrome, or you can type your answers instead.</span>';
+
+/* ---------- Whisper (runs in a background worker) ---------- */
+const WORKER_SRC = `
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
+let asr = null;
+const files = {};
+const load = pipeline("automatic-speech-recognition", "${WHISPER_MODEL}", {
+  dtype: "q8", device: "wasm",
+  progress_callback: p => {
+    if (p.status === "progress" && p.total) {
+      files[p.file] = [p.loaded, p.total];
+      let l = 0, t = 0; for (const k in files) { l += files[k][0]; t += files[k][1]; }
+      postMessage({ type: "progress", pct: Math.round(l / t * 100) });
+    }
+  }
+}).then(m => { asr = m; postMessage({ type: "ready" }); })
+  .catch(e => postMessage({ type: "failed", error: String(e) }));
+onmessage = async e => {
+  const { id, audio } = e.data;
+  try {
+    await load;
+    if (!asr) throw new Error("model not loaded");
+    const out = await asr(audio, { chunk_length_s: 30, stride_length_s: 5 });
+    postMessage({ type: "result", id, text: (out.text || "").trim() });
+  } catch (err) { postMessage({ type: "result", id, error: String(err) }); }
+};`;
+
+let worker = null, whisperOk = true;
+try {
+  worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" })), { type: "module" });
+  worker.onmessage = e => {
+    const m = e.data;
+    if (m.type === "progress") $("engineNote").textContent = `Preparing transcription engine: ${m.pct}%`;
+    if (m.type === "ready") $("engineNote").textContent = "Transcription engine ready.";
+    if (m.type === "failed") { whisperOk = false; $("engineNote").textContent = ""; pending.forEach(i => pending.delete(i)); updateReview(); }
+    if (m.type === "result") {
+      pending.delete(m.id);
+      if (!m.error && m.text) whisperText[m.id] = m.text;
+      updateReview();
+    }
+  };
+  worker.onerror = () => { whisperOk = false; pending.clear(); updateReview(); };
+} catch (_) { whisperOk = false; }
+
+async function initMic() {
+  try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (_) { micStream = null; }
+}
+
+function startRecording() {
+  if (!micStream || !whisperOk) return;
+  if (recorder && recorder.state === "paused") { recorder.resume(); return; }
+  if (recorder && recorder.state === "recording") return;
+  chunks = [];
+  recorder = new MediaRecorder(micStream);
+  recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  recorder.start(1000);
+}
+
+function pauseRecording() { if (recorder && recorder.state === "recording") recorder.pause(); }
+
+function finishRecording(qIndex) {
+  if (!recorder || recorder.state === "inactive") return;
+  const r = recorder; recorder = null;
+  r.onstop = async () => {
+    const blob = new Blob(chunks, { type: r.mimeType });
+    if (!whisperOk || blob.size < 2000) return;
+    pending.add(qIndex); updateReview();
+    try {
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const audio = buf.getChannelData(0).slice();
+      ctx.close();
+      worker.postMessage({ id: qIndex, audio }, [audio.buffer]);
+    } catch (_) { pending.delete(qIndex); updateReview(); }
+  };
+  r.stop();
+}
 
 function pickVoice() {
   const v = synth.getVoices();
@@ -156,10 +253,12 @@ function setupRec() {
 }
 
 function startListening() {
+  if (!rec && micStream) { startRecording(); setStatus("live", "Recording... speak your answer, then click Next."); return; }
   if (!rec) { setStatus("", "Type your answer below, then click Next."); return; }
   baseText = $("answer").value.trim();
   wantListen = true;
   try { rec.start(); listening = true; } catch (_) {}
+  startRecording();
   setStatus("live", "Listening... speak your answer, then click Next.");
   $("micBtn").textContent = "Pause mic";
 }
@@ -168,6 +267,7 @@ function stopListening() {
   wantListen = false;
   if (rec && listening) try { rec.stop(); } catch (_) {}
   listening = false;
+  pauseRecording();
 }
 
 async function askCurrent() {
@@ -175,7 +275,7 @@ async function askCurrent() {
   $("progressText").textContent = `Question ${idx + 1} of ${QUESTIONS.length}`;
   $("progressBar").style.width = `${(idx / QUESTIONS.length) * 100}%`;
   $("questionText").textContent = QUESTIONS[idx];
-  $("answer").value = answers[idx] || "";
+  $("answer").value = liveAnswers[idx] || "";
   $("nextBtn").textContent = idx === QUESTIONS.length - 1 ? "Finish" : "Next";
   $("nextBtn").disabled = true;
   await speak(QUESTIONS[idx]);
@@ -187,6 +287,7 @@ $("beginBtn").onclick = async () => {
   candidate = { name: $("name").value.trim(), email: $("email").value.trim(), phone: $("phone").value.trim() };
   if (!candidate.name || !candidate.email) { alertBox("Please enter your name and email."); return; }
   startedAt = new Date();
+  await initMic();
   rec = setupRec();
   $("start").classList.add("hidden");
   $("interview").classList.remove("hidden");
@@ -203,10 +304,49 @@ $("micBtn").onclick = () => {
 
 $("nextBtn").onclick = async () => {
   stopListening();
-  answers[idx] = $("answer").value.trim();
-  if (!answers[idx]) { setStatus("", "Please give an answer before moving on."); startListening(); return; }
+  const text = $("answer").value.trim();
+  if (!text && !(recorder && chunks.length)) { setStatus("", "Please give an answer before moving on."); startListening(); return; }
+  liveAnswers[idx] = text;
+  finishRecording(idx);
   if (idx < QUESTIONS.length - 1) { idx++; askCurrent(); }
-  else finish();
+  else showReview();
+};
+
+function showReview() {
+  $("progressBar").style.width = "100%";
+  $("interview").classList.add("hidden");
+  $("review").classList.remove("hidden");
+  speak("Thank you. Please review your answers and correct anything that was misheard.");
+  const list = $("reviewList"); list.innerHTML = "";
+  QUESTIONS.forEach((q, i) => {
+    const d = document.createElement("div"); d.className = "review-item";
+    const l = document.createElement("div"); l.className = "rq"; l.textContent = `Q${i + 1}. ${q}`;
+    const t = document.createElement("textarea"); t.id = "rv" + i; t.value = whisperText[i] || liveAnswers[i] || "";
+    t.oninput = () => t.dataset.edited = "1";
+    d.append(l, t); list.append(d);
+  });
+  updateReview();
+}
+
+function updateReview() {
+  if ($("review").classList.contains("hidden")) return;
+  QUESTIONS.forEach((_, i) => {
+    const t = $("rv" + i);
+    if (!t || t.dataset.edited) return;
+    t.value = whisperText[i] || liveAnswers[i] || "";
+    t.disabled = pending.has(i);
+  });
+  const n = pending.size;
+  $("reviewDot").className = "dot" + (n ? " speak" : "");
+  $("reviewStatus").textContent = n ? `Preparing a cleaner transcript of ${n} answer${n > 1 ? "s" : ""}. This can take a minute...` : "Your answers are ready to review.";
+  $("reviewDoneBtn").disabled = n > 0;
+}
+
+$("reviewDoneBtn").onclick = () => {
+  QUESTIONS.forEach((_, i) => answers[i] = ($("rv" + i).value || "").trim());
+  $("review").classList.add("hidden");
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  finish();
 };
 
 function buildPayload() {
@@ -235,8 +375,6 @@ function buildFormUrl(p) {
 }
 
 function finish() {
-  $("progressBar").style.width = "100%";
-  $("interview").classList.add("hidden");
   $("done").classList.remove("hidden");
   $("backupRow").classList.remove("hidden");
   speak("Thank you. One last step. Click the button to open the submission form, check your answers, and press Submit.");
